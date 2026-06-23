@@ -1,0 +1,15 @@
+{
+  "name": "traceroot-claude-code-plugin",
+  "description": "TraceRoot observability plugins for Claude Code",
+  "owner": {
+    "name": "TraceRoot",
+    "url": "https://traceroot.ai"
+  },
+  "plugins": [
+    {
+      "name": "traceroot-observability",
+      "source": "./",
+      "description": "Trace every Claude Code session to TraceRoot — turns, tools, sub-agents, tokens."
+    }
+  ]
+}
