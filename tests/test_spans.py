@@ -763,3 +763,63 @@ def test_successful_tool_result_is_not_error():
     assert tool_spans[0].status.status_code != StatusCode.ERROR, (
         "A successful tool result must not produce an ERROR span"
     )
+
+
+# ---------------------------------------------------------------------------
+# Distributed tracing — inbound TRACEPARENT propagation
+# ---------------------------------------------------------------------------
+
+def _ask_turn(text="hi", ts="2026-06-22T04:00:00Z"):
+    return Turn(
+        user_msg={"message": {"role": "user", "content": text}, "timestamp": ts},
+        assistant_msgs=[{"type": "assistant", "requestId": "rp", "timestamp": "2026-06-22T04:00:01Z",
+            "message": {"id": "rp", "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}}}],
+        tool_results={})
+
+
+def test_emit_ask_nests_under_inbound_traceparent(monkeypatch):
+    """With TRACEPARENT set, the root must adopt the inbound trace_id and parent span id."""
+    TRACE_ID = "0af7651916cd43dd8448eb211c80319c"
+    PARENT_SPAN = "b7ad6b7169203331"
+    monkeypatch.setenv("TRACEPARENT", f"00-{TRACE_ID}-{PARENT_SPAN}-01")
+    tracer, exp = _tracer()
+    spans.build_ask_spans(tracer, [_ask_turn()], session_id="sess-tp", git=("", ""), tags=[], max_chars=20000)
+    roots = [s for s in exp.get_finished_spans() if s.attributes.get(spans.OI["KIND"]) == "AGENT"]
+    assert len(roots) == 1
+    r = roots[0]
+    assert format(r.context.trace_id, "032x") == TRACE_ID, "root must share the inbound trace_id"
+    assert r.parent is not None and format(r.parent.span_id, "016x") == PARENT_SPAN, (
+        "root must be parented to the inbound span id"
+    )
+
+
+def test_emit_ask_new_trace_without_traceparent(monkeypatch):
+    """Without TRACEPARENT, the root is a fresh trace (no parent) — unchanged behavior."""
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+    monkeypatch.delenv("BAGGAGE", raising=False)
+    tracer, exp = _tracer()
+    spans.build_ask_spans(tracer, [_ask_turn()], session_id="sess-np", git=("", ""), tags=[], max_chars=20000)
+    r = [s for s in exp.get_finished_spans() if s.attributes.get(spans.OI["KIND"]) == "AGENT"][0]
+    assert r.parent is None, "no TRACEPARENT → root must have no parent (fresh trace)"
+
+
+def test_emit_ask_malformed_traceparent_falls_open(monkeypatch):
+    """A malformed TRACEPARENT must not crash and must fall back to a fresh trace."""
+    monkeypatch.setenv("TRACEPARENT", "not-a-valid-traceparent")
+    tracer, exp = _tracer()
+    spans.build_ask_spans(tracer, [_ask_turn()], session_id="sess-bad", git=("", ""), tags=[], max_chars=20000)
+    r = [s for s in exp.get_finished_spans() if s.attributes.get(spans.OI["KIND"]) == "AGENT"][0]
+    assert r.parent is None, "malformed TRACEPARENT → fail-open to fresh trace"
+
+
+def test_emit_ask_stamps_baggage_as_attributes(monkeypatch):
+    """Baggage entries are stamped as traceroot.baggage.* attributes for correlation."""
+    monkeypatch.setenv("TRACEPARENT", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+    monkeypatch.setenv("BAGGAGE", "request_id=req-123,customer=acme")
+    tracer, exp = _tracer()
+    spans.build_ask_spans(tracer, [_ask_turn()], session_id="sess-bag", git=("", ""), tags=[], max_chars=20000)
+    r = [s for s in exp.get_finished_spans() if s.attributes.get(spans.OI["KIND"]) == "AGENT"][0]
+    assert r.attributes.get("traceroot.baggage.request_id") == "req-123"
+    assert r.attributes.get("traceroot.baggage.customer") == "acme"
