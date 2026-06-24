@@ -68,6 +68,14 @@ def _tool_calls(content) -> list:
     return out
 
 
+def _usage_int(value) -> int:
+    """Return a token count as int, defaulting malformed values to zero."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def llm_calls(assistant_msgs: list[dict]) -> list[LlmCall]:
     """
     Collapse a flat list of assistant transcript messages into per-requestId LlmCall
@@ -118,16 +126,16 @@ def llm_calls(assistant_msgs: list[dict]) -> list[LlmCall]:
         u = msg.get("usage") or {}
         if rid not in seen_input:
             # First sighting: count input and cache tokens exactly once.
-            inp = int(u.get("input_tokens") or 0)
-            cr = int(u.get("cache_read_input_tokens") or 0)
-            cc = int(u.get("cache_creation_input_tokens") or 0)
+            inp = _usage_int(u.get("input_tokens"))
+            cr = _usage_int(u.get("cache_read_input_tokens"))
+            cc = _usage_int(u.get("cache_creation_input_tokens"))
             call.prompt += inp + cr + cc
             call.cache_read += cr
             call.cache_creation += cc
             seen_input.add(rid)
 
         # Output: add only the delta over the running max for this requestId.
-        out = int(u.get("output_tokens") or 0)
+        out = _usage_int(u.get("output_tokens"))
         prior = out_max.get(rid, 0)
         if out > prior:
             call.completion += out - prior

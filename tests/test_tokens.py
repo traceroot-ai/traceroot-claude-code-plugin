@@ -115,6 +115,34 @@ def test_missing_usage_defaults_to_zero():
     assert c.prompt == 0 and c.completion == 0 and c.cache_read == 0 and c.cache_creation == 0
 
 
+def test_malformed_usage_values_default_to_zero():
+    """Malformed usage values should not break trace emission."""
+    msg = {
+        "type": "assistant",
+        "requestId": "r_bad_usage",
+        "timestamp": "2026-06-22T00:00:00Z",
+        "message": {
+            "id": "r_bad_usage",
+            "model": "claude-haiku",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {
+                "input_tokens": "unknown",
+                "output_tokens": "NaN",
+                "cache_read_input_tokens": None,
+                "cache_creation_input_tokens": {"bad": "shape"},
+            },
+        },
+    }
+    calls = tokens.llm_calls([msg])
+    assert len(calls) == 1
+    c = calls[0]
+    assert c.prompt == 0
+    assert c.completion == 0
+    assert c.cache_read == 0
+    assert c.cache_creation == 0
+    assert c.text == "ok"
+
+
 def test_start_and_end_timestamps():
     """start_ts = first frame's timestamp, end_ts = last frame's timestamp."""
     msgs = [
