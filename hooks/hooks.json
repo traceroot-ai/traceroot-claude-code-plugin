@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop":         [{ "hooks": [{ "type": "command", "command": "uv run --quiet --script \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py || python3 \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "command": "uv run --quiet --script \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py || python3 \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py" }] }],
+    "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "uv run --quiet --script \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py || python3 \"${CLAUDE_PLUGIN_ROOT}\"/hooks/traceroot_hook.py" }] }]
+  }
+}

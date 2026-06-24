@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SDD scratch (local dev ledger — must never be published)
+.superpowers/

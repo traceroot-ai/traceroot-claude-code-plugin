@@ -1,0 +1,12 @@
+{
+  "name": "traceroot-observability",
+  "description": "Trace every Claude Code session to TraceRoot — turns, tools, sub-agents, tokens.",
+  "version": "0.1.0",
+  "author": { "name": "TraceRoot" },
+  "userConfig": {
+    "TRACEROOT_API_KEY": { "type": "string", "title": "TraceRoot API Key", "description": "Your TraceRoot workspace API key. Stored in your OS keychain.", "sensitive": true, "required": true },
+    "TRACEROOT_HOST_URL": { "type": "string", "title": "TraceRoot Host", "description": "TraceRoot host URL. Default https://app.traceroot.ai; use your local dev URL to test against make dev.", "default": "https://app.traceroot.ai" },
+    "TRACEROOT_PLUGIN_MAX_CHARS": { "type": "number", "title": "Max chars per field", "description": "Truncate captured inputs/outputs to this many characters (middle-elided).", "default": 20000 },
+    "TRACEROOT_PLUGIN_DEBUG": { "type": "boolean", "title": "Debug logging", "description": "Append hook/emit diagnostics to ~/.claude/state/traceroot/debug.log (troubleshooting only).", "default": false }
+  }
+}
