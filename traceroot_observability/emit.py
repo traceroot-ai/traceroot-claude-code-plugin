@@ -145,7 +145,8 @@ def _ask_key(ask_turns: list) -> str:
     import json
     content = (first.user_msg.get("message") or {}).get("content")
     digest = hashlib.sha1(
-        json.dumps(content, default=str, sort_keys=True).encode("utf-8")
+        json.dumps(content, default=str, sort_keys=True).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:16]
     return f"ask-{digest}"
 
