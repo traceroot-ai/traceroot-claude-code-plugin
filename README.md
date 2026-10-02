@@ -6,6 +6,21 @@ Each conversation turn becomes a trace in TraceRoot showing the LLM call, tool i
 
 ---
 
+## Requirements
+
+This plugin runs its hooks with [`uv`](https://docs.astral.sh/uv/), which fetches the tracing SDK on demand (no global install needed). You must have `uv` available on your `PATH`:
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+`uv` provisions Python 3.11+ automatically, so no separate Python install is required.
+
+> **Note:** Without `uv`, the plugin still installs but **silently captures nothing** (the hooks fail open with no traces and no error). If you've installed it and see no traces in TraceRoot, check that `uv` is on your `PATH` first.
+
+---
+
 ## Installation
 
 ### Plugin marketplace (recommended)
