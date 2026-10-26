@@ -16,6 +16,10 @@ class Config:
 def load_config() -> Config:
     try:
         max_chars = int(_env_opt("TRACEROOT_PLUGIN_MAX_CHARS") or "20000")
+        # A 0/negative budget disables truncation entirely (see middle_truncate),
+        # so treat an out-of-range value the same as a non-integer: fall back.
+        if max_chars < 1:
+            max_chars = 20000
     except ValueError:
         max_chars = 20000
     return Config(
