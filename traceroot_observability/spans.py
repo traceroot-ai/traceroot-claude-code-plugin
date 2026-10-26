@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from .config import load_config
 from .tokens import llm_calls
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,19 @@ OI: dict[str, str] = {
     "GIT_REPO":     "traceroot.git.repo",
     "GIT_REF":      "traceroot.git.ref",
 }
+
+_CONTENT_KEYS = (OI["INPUT"], OI["OUTPUT"], "gen_ai.thinking")
+
+
+def _capture_content() -> bool:
+    return load_config().capture_content
+
+
+def _scrub(attrs: dict) -> dict:
+    """Drop conversation-content attributes when capture is disabled."""
+    if _capture_content():
+        return attrs
+    return {k: v for k, v in attrs.items() if k not in _CONTENT_KEYS}
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +250,7 @@ def _build_turn_spans_into(
             call.model,
             start_time=llm_start,
             context=parent_ctx,
-            attributes=llm_attrs,
+            attributes=_scrub(llm_attrs),
         )
         _stamp_sdk(llm_span)
         # Do NOT end llm_span yet — sync tools will be nested under it, and we
@@ -302,7 +316,7 @@ def _build_turn_spans_into(
                 str(tc.get("name") or "tool"),
                 start_time=tool_start,
                 context=span_ctx,
-                attributes=tool_attrs,
+                attributes=_scrub(tool_attrs),
             )
             _stamp_sdk(tool_span)
 
@@ -311,7 +325,10 @@ def _build_turn_spans_into(
             # error span (status.code==2) and the trace's error_count reflects it.
             if res.get("is_error"):
                 tool_span.set_status(
-                    Status(StatusCode.ERROR, middle_truncate(output_str, 200))
+                    Status(
+                        StatusCode.ERROR,
+                        middle_truncate(output_str, 200) if _capture_content() else "tool error",
+                    )
                 )
 
             # Hook for subagent traces (Task 7 wires the real emitter).
@@ -414,7 +431,7 @@ def build_turn_spans(
     for tag in tags:
         root_attrs[f"tag.{tag}"] = True
 
-    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=root_attrs)
+    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=_scrub(root_attrs))
     _stamp_sdk(root)
     root_ctx = trace.set_span_in_context(root)
 
@@ -425,7 +442,7 @@ def build_turn_spans(
     )
 
     # --- finalise root span -----------------------------------------------
-    if last_text:
+    if last_text and _capture_content():
         root.set_attribute(OI["OUTPUT"], middle_truncate(last_text, max_chars))
 
     # max_end_ns already covers the last LLM call's end plus any async tool ends.
@@ -481,7 +498,7 @@ def build_ask_spans(
     for tag in tags:
         root_attrs[f"tag.{tag}"] = True
 
-    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=root_attrs)
+    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=_scrub(root_attrs))
     _stamp_sdk(root)
     root_ctx = trace.set_span_in_context(root)
 
@@ -499,7 +516,7 @@ def build_ask_spans(
             if ask_max_end_ns is None or turn_max_end > ask_max_end_ns:
                 ask_max_end_ns = turn_max_end
 
-    if ask_last_text:
+    if ask_last_text and _capture_content():
         root.set_attribute(OI["OUTPUT"], middle_truncate(ask_last_text, max_chars))
 
     root.end(end_time=ask_max_end_ns)
