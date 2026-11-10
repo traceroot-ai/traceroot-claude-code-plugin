@@ -13,12 +13,52 @@ Provides:
 """
 
 import json
+import os
 from datetime import datetime, timezone
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from .tokens import llm_calls
+
+
+def _inbound_parent_context():
+    """
+    Build an OTEL parent Context from inbound W3C trace context, for distributed
+    tracing: a backend (e.g. traceroot-py) that launches Claude Code can inject
+    ``TRACEPARENT`` (and optionally ``BAGGAGE``) into the environment of the
+    ``claude`` process, and these spans then nest under the backend's span in the
+    SAME trace.
+
+    Scope is per-process: the env is read from THIS hook process (which Claude
+    Code spawned as a child of the launching ``claude`` invocation), so parallel
+    flows that each launch ``claude`` with their own TRACEPARENT stay separate.
+
+    Returns ``(context_or_None, baggage_dict)``. Fail-open: a missing or malformed
+    TRACEPARENT yields ``(None, {})`` → the caller starts a fresh root trace, exactly
+    as before. Baggage entries are returned so the caller can stamp them as attributes.
+    """
+    tp = os.environ.get("TRACEPARENT")
+    bg = os.environ.get("BAGGAGE")
+    if not tp and not bg:
+        return None, {}
+    try:
+        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+        from opentelemetry.baggage.propagation import W3CBaggagePropagator
+        from opentelemetry import baggage as _bag
+
+        carrier = {}
+        if tp:
+            carrier["traceparent"] = tp
+        if bg:
+            carrier["baggage"] = bg
+        ctx = TraceContextTextMapPropagator().extract(carrier)
+        ctx = W3CBaggagePropagator().extract(carrier, context=ctx)
+        valid = trace.get_current_span(ctx).get_span_context().is_valid
+        bag_attrs = {str(k): str(v) for k, v in _bag.get_all(ctx).items()} if bg else {}
+        return (ctx if valid else None), bag_attrs
+    except Exception:
+        return None, {}
 
 # ---------------------------------------------------------------------------
 # SDK identity constants
@@ -414,7 +454,13 @@ def build_turn_spans(
     for tag in tags:
         root_attrs[f"tag.{tag}"] = True
 
-    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=root_attrs)
+    parent_ctx, baggage_attrs = _inbound_parent_context()
+    for k, v in baggage_attrs.items():
+        root_attrs[f"traceroot.baggage.{k}"] = v
+
+    root = tracer.start_span(
+        "Claude Code Turn", start_time=start_ns, attributes=root_attrs, context=parent_ctx
+    )
     _stamp_sdk(root)
     root_ctx = trace.set_span_in_context(root)
 
@@ -481,7 +527,15 @@ def build_ask_spans(
     for tag in tags:
         root_attrs[f"tag.{tag}"] = True
 
-    root = tracer.start_span("Claude Code Turn", start_time=start_ns, attributes=root_attrs)
+    # Distributed tracing: if a launching backend injected TRACEPARENT/BAGGAGE,
+    # parent this ask under the backend's span (same trace_id); else new root.
+    parent_ctx, baggage_attrs = _inbound_parent_context()
+    for k, v in baggage_attrs.items():
+        root_attrs[f"traceroot.baggage.{k}"] = v
+
+    root = tracer.start_span(
+        "Claude Code Turn", start_time=start_ns, attributes=root_attrs, context=parent_ctx
+    )
     _stamp_sdk(root)
     root_ctx = trace.set_span_in_context(root)
 
