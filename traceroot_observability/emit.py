@@ -10,10 +10,10 @@ Design constraints:
   so those lazy imports never execute during tests.
 - Flush is capped at 5s on a daemon thread to avoid blocking Claude Code.
 - Fail-open: missing api_key, session_id, or transcript_path → return quietly.
-- emitted_ask_keys tracks which asks have been emitted by stable timestamp key;
-  the whole transcript is re-parsed each Stop so cross-read-boundary splits
-  never lose turns. Key-based tracking is out-of-order safe: asks complete
-  in any order and each is emitted exactly once.
+- emitted_ask_keys tracks which asks have been exported, by stable timestamp
+  key. The transcript is re-parsed each Stop so a split read never loses a
+  turn. Keys are recorded only after the export succeeds, so a failed export
+  is retried. A crash after a successful export can send the ask again.
 
 Ask grouping:
   A "task-notification" turn is one whose user text starts with <task-notification>.
@@ -27,6 +27,7 @@ Ask grouping:
     - is_session_end (flush everything)
 """
 
+import sys
 import threading
 from .config import load_config
 from . import state as _state
@@ -58,13 +59,52 @@ def _tracer(cfg, git):
     tracer = _trace.get_tracer("traceroot.claude-code")
 
     def flush():
-        try:
-            traceroot.flush()
-            traceroot.shutdown()
-        except Exception:
-            pass
+        return _flush_client(traceroot)
 
     return tracer, flush
+
+
+def _export_result_failed(result) -> bool:
+    """True when an OpenTelemetry exporter reports FAILURE.
+
+    HTTP 401 and other export errors come back as that result. They do not
+    raise, and BatchSpanProcessor.force_flush still returns True after logging
+    them, so the result itself is what says the batch was not accepted.
+    """
+    return getattr(result, "name", None) == "FAILURE"
+
+
+def _flush_client(traceroot) -> bool:
+    """Flush the live client and report whether the export was accepted."""
+    client = traceroot.get_client()
+    processor = getattr(client, "span_processor", None) if client is not None else None
+    exporter = getattr(processor, "span_exporter", None) if processor is not None else None
+    original = getattr(exporter, "export", None) if exporter is not None else None
+    failed = {"value": False}
+
+    def watching(spans):
+        result = original(spans)
+        if _export_result_failed(result):
+            failed["value"] = True
+        return result
+
+    try:
+        if exporter is not None and original is not None:
+            exporter.export = watching
+        if processor is not None:
+            flushed = processor.force_flush()
+        else:
+            traceroot.flush()
+            flushed = None
+        traceroot.shutdown()
+    except Exception:
+        return False
+    finally:
+        if exporter is not None and original is not None:
+            exporter.export = original
+    if failed["value"] or flushed is False:
+        return False
+    return True
 
 
 def _resolve_git(payload, st):
@@ -97,11 +137,42 @@ def _resolve_git(payload, st):
 # Flush cap
 # ---------------------------------------------------------------------------
 
-def _capped_flush(flush):
-    """Run flush() on a daemon thread, joining with a 5s cap."""
-    th = threading.Thread(target=flush, daemon=True)
+def _capped_flush(flush) -> bool:
+    """Run flush() on a daemon thread, joining with a 5s cap.
+
+    False from flush, an exception, or a thread still running at the cap means
+    the export is not known to have succeeded. None and True do: the tests'
+    fakes return None.
+    """
+    outcome = {"ok": True}
+
+    def run():
+        try:
+            result = flush()
+        except Exception:
+            outcome["ok"] = False
+            return
+        if result is False:
+            outcome["ok"] = False
+
+    th = threading.Thread(target=run, daemon=True)
     th.start()
     th.join(5.0)
+    if th.is_alive():
+        return False
+    return outcome["ok"]
+
+
+def _note_export_failure(session_id: str) -> None:
+    """The ask stays unrecorded, so the next Stop tries the export again."""
+    debug_log(f"Stop: export failed, session={session_id}; asks left unrecorded")
+    try:
+        print(
+            "traceroot: export failed; this turn will be sent again on the next Stop",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +203,8 @@ def _ask_key(ask_turns: list) -> str:
     Stable key for an ask: the first turn's user-message timestamp.
 
     Fallback (only if a record somehow lacks a timestamp) is a content hash —
-    deterministic across re-parses, so the same ask keeps the same key and is
-    never re-emitted. (Never id(), which differs each handle_stop.)
+    deterministic across re-parses, so the same ask keeps the same key.
+    (Never id(), which differs each handle_stop.)
     """
     if not ask_turns:
         return "empty-ask"
@@ -210,8 +281,11 @@ def handle_stop(payload: dict, is_session_end: bool = False) -> None:
                 to_emit.append(ask)
                 newly_emitted_keys.append(key)
 
-        st.emitted_ask_keys = sorted(emitted | set(newly_emitted_keys))
-        _state.save_state(session_id, st)
+        # Nothing new to export: keep the git cache and the keys already sent.
+        # New keys wait until the export is known to have succeeded. Saving them
+        # first made a 401 or a raised tracer look like a finished send.
+        if not newly_emitted_keys:
+            _state.save_state(session_id, st)
 
     debug_log(
         f"Stop: {len(records)} records total, {len(turns)} complete turns,"
@@ -221,23 +295,41 @@ def handle_stop(payload: dict, is_session_end: bool = False) -> None:
     if not to_emit:
         return
 
-    tracer, flush = _tracer(cfg, git)
+    try:
+        tracer, flush = _tracer(cfg, git)
 
-    from .subagents import make_emitter
-    emitter = make_emitter(session_id, tpath)
+        from .subagents import make_emitter
+        emitter = make_emitter(session_id, tpath)
 
-    for ask_turns in to_emit:
-        _s.build_ask_spans(
-            tracer,
-            ask_turns,
-            session_id,
-            git,
-            ["claude-code"],
-            cfg.max_chars,
-            subagent_emitter=emitter,
-        )
+        for ask_turns in to_emit:
+            _s.build_ask_spans(
+                tracer,
+                ask_turns,
+                session_id,
+                git,
+                ["claude-code"],
+                cfg.max_chars,
+                subagent_emitter=emitter,
+            )
 
-    _capped_flush(flush)
+        exported = _capped_flush(flush)
+    except Exception:
+        _note_export_failure(session_id)
+        return
+
+    if not exported:
+        _note_export_failure(session_id)
+        return
+
+    with _state.session_lock(session_id):
+        st = _state.load_state(session_id)
+        st.emitted_ask_keys = sorted(set(st.emitted_ask_keys) | set(newly_emitted_keys))
+        repo, ref = git
+        if repo:
+            st.git_repo = repo
+        if ref:
+            st.git_ref = ref
+        _state.save_state(session_id, st)
     debug_log(f"Stop: emitted {len(to_emit)} ask-traces, flush capped")
 
 
