@@ -21,8 +21,10 @@ Ask grouping:
   Notifications are id-matched to their launching ask via agent-<task-id>.meta.json
   → toolUseId → ask that issued that tool_use block. Falls back to positional
   attachment when subagents_dir is unavailable or the meta file is missing.
-  Asks are emitted only when COMPLETE:
-    - launched == 0 (no sub-agents → done at its Stop), OR
+  Asks are emitted only when COMPLETE (launched = background sub-agents, plus
+  any whose result row is not in the transcript yet; a foreground sub-agent
+  finishes inside its turn and sends no notification):
+    - launched == 0 (no pending sub-agents → done at its Stop), OR
     - notifs >= launched (all launched sub-agents have reported), OR
     - is_session_end (flush everything)
 """
@@ -109,7 +111,13 @@ def _capped_flush(flush):
 # ---------------------------------------------------------------------------
 
 def _count_launched(ask_turns: list) -> int:
-    """Count Task/Agent tool_use blocks across all turns in an ask."""
+    """Count Task/Agent launches that may still send a <task-notification>.
+
+    Only background launches are followed by one; a foreground sub-agent returns
+    its result inline, so it must not hold the ask open. A launch with no result
+    row yet is unclassified (Stop can read the transcript before the row lands),
+    so it stays pending rather than being emitted early and skipped for good.
+    """
     count = 0
     for turn in ask_turns:
         for msg in turn.assistant_msgs:
@@ -118,7 +126,9 @@ def _count_launched(ask_turns: list) -> int:
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         if block.get("name") in ("Task", "Agent"):
-                            count += 1
+                            res = turn.tool_results.get(str(block.get("id") or ""))
+                            if res is None or res.get("is_async"):
+                                count += 1
     return count
 
 

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 class Turn:
     user_msg: dict
     assistant_msgs: list = field(default_factory=list)
-    tool_results: dict = field(default_factory=dict)  # tool_use_id -> {"content":..., "timestamp":..., "is_error": bool}
+    tool_results: dict = field(default_factory=dict)  # tool_use_id -> {"content":..., "timestamp":..., "is_error": bool, "is_async": bool}
 
 
 def read_all_records(path: str) -> list[dict]:
@@ -70,6 +70,20 @@ def _is_tool_result(m: dict) -> bool:
     )
 
 
+def _is_async_launch(row: dict, block: dict) -> bool:
+    """Return True if this tool_result is a background sub-agent launch, i.e. the
+    sub-agent's outcome arrives later as a <task-notification> turn."""
+    tur = row.get("toolUseResult")
+    if isinstance(tur, dict):
+        return bool(tur.get("isAsync")) or tur.get("status") == "async_launched"
+    # shortcut: SDK harnesses omit toolUseResult, so match the launch text; switch
+    # to a structured field if they start writing one or Claude Code rewords it.
+    c = block.get("content")
+    if isinstance(c, list):
+        c = next((b.get("text") for b in c if isinstance(b, dict) and b.get("type") == "text"), "")
+    return isinstance(c, str) and c.lstrip().startswith("Async agent launched")
+
+
 def assemble_turns(records: list[dict]) -> list[Turn]:
     """
     Group flat transcript rows into Turn objects.
@@ -107,6 +121,7 @@ def assemble_turns(records: list[dict]) -> list[Turn]:
                         # Claude Code sets is_error=true on a tool_result when the tool
                         # failed (failed Bash, missing file, etc.). Surfaced as span status.
                         "is_error": bool(x.get("is_error")),
+                        "is_async": _is_async_launch(m, x),
                     }
             continue
 
