@@ -1,5 +1,5 @@
 """
-Optional debug logging for the TraceRoot Claude Code plugin.
+Optional debug logging for the traceroot Claude Code plugin.
 
 When TRACEROOT_PLUGIN_DEBUG (or CLAUDE_PLUGIN_OPTION_TRACEROOT_PLUGIN_DEBUG) is truthy,
 timestamped diagnostic lines are appended to <STATE_ROOT>/debug.log.
