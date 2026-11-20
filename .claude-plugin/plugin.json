@@ -7,6 +7,7 @@
     "TRACEROOT_API_KEY": { "type": "string", "title": "TraceRoot API Key", "description": "Your TraceRoot workspace API key. Stored in your OS keychain.", "sensitive": true, "required": true },
     "TRACEROOT_HOST_URL": { "type": "string", "title": "TraceRoot Host", "description": "TraceRoot host URL. Default https://app.traceroot.ai; use your local dev URL to test against make dev.", "default": "https://app.traceroot.ai" },
     "TRACEROOT_PLUGIN_MAX_CHARS": { "type": "number", "title": "Max chars per field", "description": "Truncate captured inputs/outputs to this many characters (middle-elided).", "default": 20000 },
+    "TRACEROOT_PLUGIN_CAPTURE_CONTENT": { "type": "boolean", "title": "Capture conversation content", "description": "Send prompts, responses, tool inputs/outputs and thinking to TraceRoot. Turn off to send only metadata (timings, token counts, tool names). Any unrecognised value is treated as off.", "default": true },
     "TRACEROOT_PLUGIN_DEBUG": { "type": "boolean", "title": "Debug logging", "description": "Append hook/emit diagnostics to ~/.claude/state/traceroot/debug.log (troubleshooting only).", "default": false }
   }
 }
