@@ -609,7 +609,7 @@ def test_sdk_name_and_version_on_llm_and_tool_spans():
 
 def test_cache_write_uses_backend_key_for_correct_pricing():
     """Cache-creation tokens must be emitted under the OpenInference
-    `prompt_details.cache_write` key — the one the TraceRoot backend reads for its
+    `prompt_details.cache_write` key — the one the traceroot backend reads for its
     cache-write price bucket. Emitting `prompt_details.cache_creation` (the Anthropic
     name) silently mis-prices them as uncached input (~8% cost error)."""
     tracer, exp = _tracer()

@@ -1,8 +1,8 @@
 # traceroot-claude-code-plugin
 
-Observability plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that sends per-turn traces to [TraceRoot](https://traceroot.ai).
+Observability plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that sends per-turn traces to [traceroot](https://traceroot.ai).
 
-Each conversation turn becomes a trace in TraceRoot showing the LLM call, tool invocations, token usage, and any nested sub-agents — all grouped by session.
+Each conversation turn becomes a trace in traceroot showing the LLM call, tool invocations, token usage, and any nested sub-agents — all grouped by session.
 
 ---
 
@@ -38,8 +38,8 @@ Set the following environment variables (or add them to your shell profile):
 
 | Variable | Required | Description |
 |---|---|---|
-| `TRACEROOT_API_KEY` | Yes | Your TraceRoot API key. Find it at [app.traceroot.ai](https://app.traceroot.ai) → Settings → API Keys. |
-| `TRACEROOT_HOST_URL` | No | TraceRoot ingest endpoint. Defaults to the hosted service. Set this only when self-hosting. |
+| `TRACEROOT_API_KEY` | Yes | Your traceroot API key. Find it at [app.traceroot.ai](https://app.traceroot.ai) → Settings → API Keys. |
+| `TRACEROOT_HOST_URL` | No | traceroot ingest endpoint. Defaults to the hosted service. Set this only when self-hosting. |
 
 Example (add to `~/.zshrc` or `~/.bashrc`):
 
