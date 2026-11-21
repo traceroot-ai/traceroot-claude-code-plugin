@@ -224,3 +224,19 @@ def test_cross_read_turn_split_regression(tmp_path, monkeypatch):
     st2 = state.load_state("sess-cross")
     assert len(st2.emitted_ask_keys) == 3, f"emitted_ask_keys should have 3 entries, got {st2.emitted_ask_keys}"
 
+
+
+def test_awaits_notification_shapes():
+    from traceroot_observability.transcript import _awaits_notification as aw
+    launch = {"type": "tool_result", "content": "Async agent launched successfully."}
+    answer = {"type": "tool_result", "content": [{"type": "text", "text": "Here is the summary"}]}
+    # Claude Code writes toolUseResult: only a completed foreground agent is done.
+    assert aw({"toolUseResult": {"isAsync": True, "status": "async_launched"}}, launch)
+    assert not aw({"toolUseResult": {"status": "completed"}}, answer)
+    assert aw({"toolUseResult": {"status": "something_new"}}, answer)  # unknown stays pending
+    # SDK harnesses write none: fall back to the launch text.
+    assert aw({}, launch)
+    assert aw({}, {"type": "tool_result", "content": [{"type": "text", "text": "Async agent launched"}]})
+    assert not aw({}, answer)
+    # A failed launch never sends a notification.
+    assert not aw({"toolUseResult": "Error: no such agent"}, {**launch, "is_error": True})
