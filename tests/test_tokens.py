@@ -115,6 +115,69 @@ def test_missing_usage_defaults_to_zero():
     assert c.prompt == 0 and c.completion == 0 and c.cache_read == 0 and c.cache_creation == 0
 
 
+def _usage_msg(rid, usage):
+    return {
+        "type": "assistant",
+        "requestId": rid,
+        "timestamp": "2026-06-22T00:00:00Z",
+        "message": {
+            "id": rid,
+            "model": "claude-haiku",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": usage,
+        },
+    }
+
+
+def test_malformed_usage_values_default_to_zero():
+    """A malformed count is 0, like a missing one, and the call keeps its text.
+
+    The values are what json.loads returns for a transcript line, which accepts
+    NaN, Infinity and out-of-range numbers such as 1e400 (parsed as inf).
+    """
+    bad = ["unknown", {"bad": "shape"}, [1], float("nan"), float("inf"), float("-inf"), -50, True]
+    for v in bad:
+        calls = tokens.llm_calls([_usage_msg("r_bad", {
+            "input_tokens": v,
+            "output_tokens": v,
+            "cache_read_input_tokens": v,
+            "cache_creation_input_tokens": v,
+        })])
+        assert len(calls) == 1, v
+        c = calls[0]
+        assert (c.prompt, c.completion, c.cache_read, c.cache_creation) == (0, 0, 0, 0), v
+        assert c.text == "ok"
+
+
+def test_malformed_first_frame_does_not_hide_a_later_valid_count():
+    """Input and cache are the same on every frame of a call, so a valid value on a
+    later frame is used when the first frame's value was malformed."""
+    calls = tokens.llm_calls([
+        _am("r1", "opus", "unknown", 100, cr="NaN", cc=None),
+        _am("r1", "opus", 10, 175, cr=50, cc=5),
+    ])
+    c = calls[0]
+    assert (c.prompt, c.completion, c.cache_read, c.cache_creation) == (65, 175, 50, 5)
+
+
+def test_usage_that_is_not_an_object_defaults_to_zero():
+    for usage in ("bad", [1, 2], 5):
+        c = tokens.llm_calls([_usage_msg("r_shape", usage)])[0]
+        assert (c.prompt, c.completion) == (0, 0), usage
+        assert c.text == "ok"
+
+
+def test_one_malformed_usage_field_keeps_the_others():
+    calls = tokens.llm_calls([_usage_msg("r_mixed", {
+        "input_tokens": "12",
+        "output_tokens": 7.9,
+        "cache_read_input_tokens": "NaN",
+        "cache_creation_input_tokens": 3,
+    })])
+    c = calls[0]
+    assert (c.prompt, c.completion, c.cache_read, c.cache_creation) == (15, 7, 0, 3)
+
+
 def test_start_and_end_timestamps():
     """start_ts = first frame's timestamp, end_ts = last frame's timestamp."""
     msgs = [
