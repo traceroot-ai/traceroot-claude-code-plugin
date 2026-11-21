@@ -460,6 +460,12 @@ def build_ask_spans(
     if not ask_turns:
         return
 
+    # Parse every turn before any span is opened. A bad token count raises
+    # here, so an earlier turn cannot leave ended child spans under a root
+    # that never ends.
+    for turn in ask_turns:
+        llm_calls(turn.assistant_msgs)
+
     repo, ref = git
     first_turn = ask_turns[0]
 

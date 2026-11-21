@@ -12,10 +12,18 @@ Design constraints:
 - Stop waits up to _SETTLE_TIMEOUT_S for the turn's final assistant rows,
   so that long is added to the time the hook keeps Claude Code waiting.
 - Fail-open: missing api_key, session_id, or transcript_path → return quietly.
-- emitted_ask_keys tracks which asks have been emitted by stable timestamp key;
-  the whole transcript is re-parsed each Stop so cross-read-boundary splits
-  never lose turns. Key-based tracking is out-of-order safe: asks complete
-  in any order and each is emitted exactly once.
+- emitted_ask_keys tracks which asks have been exported, by stable timestamp
+  key. The transcript is re-parsed each Stop so a split read never loses a
+  turn. Keys are recorded after the export succeeds. A flush still running
+  at the 5s cap is recorded too, without waiting for that upload to return,
+  because the server may already have the batch. A flush that returns false
+  or raises is retried. An ask whose token counts cannot be parsed is
+  recorded, and no spans from it are exported. Any other error while
+  building that ask is left unrecorded, so the next Stop can retry it.
+  A crash after a successful export can send the ask again.
+  One flush covers every ask in the Stop. If a later batch in that flush
+  fails, the asks are rebuilt, so a batch the server already accepted is
+  sent again with new trace ids.
 
 Ask grouping:
   A "task-notification" turn is one whose user text starts with <task-notification>.
@@ -29,6 +37,7 @@ Ask grouping:
     - is_session_end (flush everything)
 """
 
+import sys
 import threading
 import time
 from .config import load_config
@@ -61,13 +70,57 @@ def _tracer(cfg, git):
     tracer = _trace.get_tracer("traceroot.claude-code")
 
     def flush():
-        try:
-            traceroot.flush()
-            traceroot.shutdown()
-        except Exception:
-            pass
+        return _flush_client(traceroot)
 
     return tracer, flush
+
+
+def _export_result_failed(result) -> bool:
+    """True when an OpenTelemetry exporter reports FAILURE.
+
+    HTTP 401 and other export errors come back as that result. They do not
+    raise, and BatchSpanProcessor.force_flush still returns True after logging
+    them, so the result itself is what says the batch was not accepted.
+    """
+    return getattr(result, "name", None) == "FAILURE"
+
+
+def _flush_client(traceroot) -> bool:
+    """Flush the live client and report whether the export was accepted."""
+    client = traceroot.get_client()
+    processor = getattr(client, "span_processor", None) if client is not None else None
+    exporter = getattr(processor, "span_exporter", None) if processor is not None else None
+    original = getattr(exporter, "export", None) if exporter is not None else None
+    failed = {"value": False}
+
+    def watching(spans):
+        try:
+            result = original(spans)
+        except Exception:
+            # The batch worker catches this and force_flush still returns True.
+            failed["value"] = True
+            raise
+        if _export_result_failed(result):
+            failed["value"] = True
+        return result
+
+    try:
+        if exporter is not None and original is not None:
+            exporter.export = watching
+        if processor is not None:
+            flushed = processor.force_flush()
+        else:
+            traceroot.flush()
+            flushed = None
+        traceroot.shutdown()
+    except Exception:
+        return False
+    finally:
+        if exporter is not None and original is not None:
+            exporter.export = original
+    if failed["value"] or flushed is False:
+        return False
+    return True
 
 
 def _resolve_git(payload, st):
@@ -100,11 +153,46 @@ def _resolve_git(payload, st):
 # Flush cap
 # ---------------------------------------------------------------------------
 
-def _capped_flush(flush):
-    """Run flush() on a daemon thread, joining with a 5s cap."""
-    th = threading.Thread(target=flush, daemon=True)
+def _capped_flush(flush) -> bool:
+    """Run flush() on a daemon thread, joining with a 5s cap.
+
+    False from flush, or an exception, is a failed export and is retried.
+    A thread still running at the cap is treated as sent. The SDK's HTTP
+    timeout is longer than this cap, so the server may already be storing
+    the batch, and retrying it writes a second trace. None and True do:
+    the tests' fakes return None.
+    """
+    outcome = {"ok": True}
+
+    def run():
+        try:
+            result = flush()
+        except Exception:
+            outcome["ok"] = False
+            return
+        if result is False:
+            outcome["ok"] = False
+
+    th = threading.Thread(target=run, daemon=True)
     th.start()
     th.join(5.0)
+    if th.is_alive():
+        # Still uploading at the cap: the server may already have it.
+        # Retrying here duplicates traces.
+        return True
+    return outcome["ok"]
+
+
+def _note_export_failure(session_id: str) -> None:
+    """The ask stays unrecorded, so the next Stop tries the export again."""
+    debug_log(f"Stop: export failed, session={session_id}; asks left unrecorded")
+    try:
+        print(
+            "traceroot: export failed; this turn will be sent again on the next Stop",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +277,8 @@ def _ask_key(ask_turns: list) -> str:
     Stable key for an ask: the first turn's user-message timestamp.
 
     Fallback (only if a record somehow lacks a timestamp) is a content hash —
-    deterministic across re-parses, so the same ask keeps the same key and is
-    never re-emitted. (Never id(), which differs each handle_stop.)
+    deterministic across re-parses, so the same ask keeps the same key.
+    (Never id(), which differs each handle_stop.)
     """
     if not ask_turns:
         return "empty-ask"
@@ -267,34 +355,89 @@ def handle_stop(payload: dict, is_session_end: bool = False) -> None:
                 to_emit.append(ask)
                 newly_emitted_keys.append(key)
 
-        st.emitted_ask_keys = sorted(emitted | set(newly_emitted_keys))
-        _state.save_state(session_id, st)
+        # Nothing new to export: keep the git cache and the keys already sent.
+        # New keys wait until the export is known to have succeeded. Saving them
+        # first made a 401 or a raised tracer look like a finished send.
+        if not newly_emitted_keys:
+            _state.save_state(session_id, st)
 
-    debug_log(
-        f"Stop: {len(records)} records total, {len(turns)} complete turns,"
-        f" {len(asks)} asks, {len(to_emit)} new complete asks, session={session_id}"
-    )
-
-    if not to_emit:
-        return
-
-    tracer, flush = _tracer(cfg, git)
-
-    from .subagents import make_emitter
-    emitter = make_emitter(session_id, tpath)
-
-    for ask_turns in to_emit:
-        _s.build_ask_spans(
-            tracer,
-            ask_turns,
-            session_id,
-            git,
-            ["claude-code"],
-            cfg.max_chars,
-            subagent_emitter=emitter,
+        # The lock stays held through the flush. Releasing it first let a
+        # second Stop select the same asks and export them twice.
+        debug_log(
+            f"Stop: {len(records)} records total, {len(turns)} complete turns,"
+            f" {len(asks)} asks, {len(to_emit)} new complete asks, session={session_id}"
         )
 
-    _capped_flush(flush)
+        if not to_emit:
+            return
+
+        try:
+            tracer, flush = _tracer(cfg, git)
+            from .subagents import make_emitter
+            emitter = make_emitter(session_id, tpath)
+        except Exception:
+            # Starting the tracer can fail for a reason that goes away, such as
+            # a rejected key. Leave the asks unrecorded so the next Stop retries.
+            _note_export_failure(session_id)
+            return
+
+        built_keys = []
+        unbuildable = []
+        for ask_turns, key in zip(to_emit, newly_emitted_keys):
+            try:
+                _s.build_ask_spans(
+                    tracer,
+                    ask_turns,
+                    session_id,
+                    git,
+                    ["claude-code"],
+                    cfg.max_chars,
+                    subagent_emitter=emitter,
+                )
+            except (ValueError, TypeError):
+                # A token count that is not a number will still be wrong on
+                # the next Stop. Record the ask so it does not block the rest.
+                debug_log(f"Stop: skip ask {key}; token usage cannot be parsed, session={session_id}")
+                unbuildable.append(key)
+                continue
+            except Exception:
+                # A plugin bug can be fixed. Leave the key out so a later Stop
+                # rebuilds the ask.
+                debug_log(f"Stop: ask {key} will be retried; span build failed, session={session_id}")
+                try:
+                    print(
+                        "traceroot: span build failed; this turn will be tried again on the next Stop",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
+                continue
+            built_keys.append(key)
+
+        if unbuildable:
+            st.emitted_ask_keys = sorted(set(st.emitted_ask_keys) | set(unbuildable))
+            _state.save_state(session_id, st)
+
+        if not built_keys:
+            return
+
+        try:
+            exported = _capped_flush(flush)
+        except Exception:
+            _note_export_failure(session_id)
+            return
+
+        if not exported:
+            _note_export_failure(session_id)
+            return
+
+        st.emitted_ask_keys = sorted(set(st.emitted_ask_keys) | set(newly_emitted_keys))
+        repo, ref = git
+        if repo:
+            st.git_repo = repo
+        if ref:
+            st.git_ref = ref
+        _state.save_state(session_id, st)
     debug_log(f"Stop: emitted {len(to_emit)} ask-traces, flush capped")
 
 
