@@ -80,6 +80,10 @@ def middle_truncate(s: str, max_chars: int) -> str:
     if len(s) <= max_chars:
         return s
     half = max_chars // 2
+    if half <= 0:
+        # Budget too small to keep any head/tail; `s[-0:]` would return the
+        # whole string, so emit only the elision marker.
+        return f"…[{len(s)} chars elided]…"
     return f"{s[:half]}\n…[{len(s)} chars, middle elided]…\n{s[-half:]}"
 
 

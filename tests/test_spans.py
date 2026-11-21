@@ -763,3 +763,69 @@ def test_successful_tool_result_is_not_error():
     assert tool_spans[0].status.status_code != StatusCode.ERROR, (
         "A successful tool result must not produce an ERROR span"
     )
+
+
+def test_middle_truncate_handles_zero_budget():
+    """With max_chars=0, should return just the elision marker, not the full text."""
+    input_text = "X" * 100
+    result = spans.middle_truncate(input_text, 0)
+    # Should not return the full text
+    assert len(result) < len(input_text), "Zero budget should truncate, not return full text"
+    # Should include elision marker
+    assert "chars elided" in result
+    # Should not include the 100 X's
+    assert "X" * 50 not in result
+
+
+def test_middle_truncate_handles_negative_budget():
+    """With max_chars<0, should return just the elision marker, not the full text."""
+    input_text = "Y" * 100
+    result = spans.middle_truncate(input_text, -5)
+    # Should not return the full text
+    assert len(result) < len(input_text), "Negative budget should truncate, not return full text"
+    # Should include elision marker
+    assert "chars elided" in result
+    # Should not include duplicate/overlapping content
+    assert result.count("Y") <= 1, "Should not contain overlapping Y characters"
+
+
+def test_middle_truncate_with_small_positive_budget():
+    """With max_chars=10, should still truncate but preserve head and tail."""
+    input_text = "A" * 100 + "B" * 100
+    result = spans.middle_truncate(input_text, 10)
+    assert len(result) < len(input_text)
+    assert "middle elided" in result
+    assert result.startswith("A")
+    assert result.endswith("B")
+
+
+def test_load_config_clamps_zero_max_chars():
+    """When TRACEROOT_PLUGIN_MAX_CHARS=0, should fall back to default 20000."""
+    import os
+    old_val = os.environ.get("TRACEROOT_PLUGIN_MAX_CHARS")
+    try:
+        os.environ["TRACEROOT_PLUGIN_MAX_CHARS"] = "0"
+        from traceroot_observability.config import load_config
+        config = load_config()
+        assert config.max_chars == 20000, "Zero max_chars should fallback to default"
+    finally:
+        if old_val is not None:
+            os.environ["TRACEROOT_PLUGIN_MAX_CHARS"] = old_val
+        elif "TRACEROOT_PLUGIN_MAX_CHARS" in os.environ:
+            del os.environ["TRACEROOT_PLUGIN_MAX_CHARS"]
+
+
+def test_load_config_clamps_negative_max_chars():
+    """When TRACEROOT_PLUGIN_MAX_CHARS=-5, should fall back to default 20000."""
+    import os
+    old_val = os.environ.get("TRACEROOT_PLUGIN_MAX_CHARS")
+    try:
+        os.environ["TRACEROOT_PLUGIN_MAX_CHARS"] = "-5"
+        from traceroot_observability.config import load_config
+        config = load_config()
+        assert config.max_chars == 20000, "Negative max_chars should fallback to default"
+    finally:
+        if old_val is not None:
+            os.environ["TRACEROOT_PLUGIN_MAX_CHARS"] = old_val
+        elif "TRACEROOT_PLUGIN_MAX_CHARS" in os.environ:
+            del os.environ["TRACEROOT_PLUGIN_MAX_CHARS"]
