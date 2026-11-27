@@ -27,6 +27,7 @@ class LlmCall:
     completion: int = 0
     cache_read: int = 0
     cache_creation: int = 0
+    cache_creation_1h: int = 0  # 1-hour-TTL share of cache_creation (priced at 2x input, not 1.25x)
     text: str = ""
     thinking: str = ""
     tool_calls: list = field(default_factory=list)
@@ -124,6 +125,7 @@ def llm_calls(assistant_msgs: list[dict]) -> list[LlmCall]:
             call.prompt += inp + cr + cc
             call.cache_read += cr
             call.cache_creation += cc
+            call.cache_creation_1h += int((u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0)
             seen_input.add(rid)
 
         # Output: add only the delta over the running max for this requestId.
