@@ -46,6 +46,8 @@ OI: dict[str, str] = {
     # (the OpenInference key), NOT `...cache_creation` (the Anthropic name). Emitting
     # cache_creation here mis-prices cache-write tokens (they fall into uncached input).
     "CACHE_CREATE": "llm.token_count.prompt_details.cache_write",
+    # The 1-hour-TTL subset of cache_write; the backend prices it at its own rate.
+    "CACHE_CREATE_1H": "llm.token_count.prompt_details.cache_write_1h",
     "TOOL_NAME":    "tool.name",
     "GEN_TOOL":     "gen_ai.tool.name",
     "TOOL_CALL_ID": "gen_ai.tool.call.id",
@@ -200,6 +202,7 @@ def _build_turn_spans_into(
             OI["TOK_TOTAL"]:      call.prompt + call.completion,
             OI["CACHE_READ"]:     call.cache_read,
             OI["CACHE_CREATE"]:   call.cache_creation,
+            OI["CACHE_CREATE_1H"]: call.cache_creation_1h,
             # output.value: JSON {role,content,tool_calls} when the call made
             # tool_calls (so tool-only calls aren't empty), else the plain text.
             # Asymmetric by design — don't assume json.loads() works on every value.

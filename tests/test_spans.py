@@ -763,3 +763,29 @@ def test_successful_tool_result_is_not_error():
     assert tool_spans[0].status.status_code != StatusCode.ERROR, (
         "A successful tool result must not produce an ERROR span"
     )
+
+
+def test_1h_cache_write_share_is_emitted_for_pricing():
+    """Claude Code writes its main-session cache with a 1-hour TTL, which Anthropic
+    bills at 2x input versus 1.25x for a 5-minute write. The backend prices the
+    1-hour share only when `prompt_details.cache_write_1h` is present (a subset of
+    `cache_write`), so without it every 1h write is priced at the 5-minute rate."""
+    tracer, exp = _tracer()
+    turn = Turn(
+        user_msg={"message": {"role": "user", "content": "hi"},
+                  "timestamp": "2026-06-23T00:00:00Z"},
+        assistant_msgs=[{
+            "type": "assistant", "requestId": "r1", "timestamp": "2026-06-23T00:00:02Z",
+            "message": {"id": "r1", "model": "claude-opus-4-8",
+                        "content": [{"type": "text", "text": "ok"}],
+                        "usage": {"input_tokens": 100, "output_tokens": 50,
+                                  "cache_read_input_tokens": 16088,
+                                  "cache_creation_input_tokens": 2689,
+                                  "cache_creation": {"ephemeral_5m_input_tokens": 689,
+                                                     "ephemeral_1h_input_tokens": 2000}}}}],
+        tool_results={})
+    spans.build_turn_spans(tracer, turn, "s", ("o/r", "abc"), ["claude-code"], 20000)
+    llm = [s for s in exp.get_finished_spans()
+           if s.attributes.get(spans.OI["KIND"]) == "LLM"][0]
+    assert llm.attributes.get("llm.token_count.prompt_details.cache_write") == 2689
+    assert llm.attributes.get("llm.token_count.prompt_details.cache_write_1h") == 2000

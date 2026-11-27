@@ -124,3 +124,13 @@ def test_start_and_end_timestamps():
     calls = tokens.llm_calls(msgs)
     assert calls[0].start_ts == "2026-06-22T10:00:00Z"
     assert calls[0].end_ts == "2026-06-22T10:00:05Z"
+
+
+def test_1h_cache_write_share_counted_once_per_request():
+    msg = _am("r1", "opus", 10, 100, cc=30)
+    msg["message"]["usage"]["cache_creation"] = {"ephemeral_5m_input_tokens": 10,
+                                                 "ephemeral_1h_input_tokens": 20}
+    c = tokens.llm_calls([msg, msg])[0]  # streamed twice: counted once
+    assert c.cache_creation == 30 and c.cache_creation_1h == 20
+    # Older transcripts with no cache_creation breakdown report no 1h share.
+    assert tokens.llm_calls([_am("r2", "opus", 10, 100, cc=30)])[0].cache_creation_1h == 0
